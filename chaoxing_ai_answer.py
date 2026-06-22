@@ -20,13 +20,11 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── 配置 ─────────────────────────────────────────────────
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")  # 在此填入你的API Key 或设置环境变量
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek-v4-pro"
 COOKIE_FILE = Path(__file__).parent / "chaoxing_cookies.json"
-TARGET_URL = ""  # 填你在超星章节页地址栏复制的完整 URL，或运行时 --url 传入
-
-# ── 数据结构 ─────────────────────────────────────────────
+TARGET_URL = ""  # 在此填入章节URL 或通过 --url 参数传入
 @dataclass
 class Question:
     qtype: str
@@ -891,6 +889,12 @@ async def main():
     if args.url:
         TARGET_URL = args.url
         print(f"[Config] 使用自定义 URL: {TARGET_URL[:120]}...")
+
+    if not TARGET_URL:
+        print("[ERROR] 请指定章节URL！")
+        print("  方式一: python chaoxing_ai_answer.py --url \"章节页面完整URL\" --mode answer")
+        print("  方式二: 编辑脚本中的 TARGET_URL 变量")
+        return
 
     if args.mode == "analyze":    await analyze_mode()
     elif args.mode == "answer":   await answer_mode()

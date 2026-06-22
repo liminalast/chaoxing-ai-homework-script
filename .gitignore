@@ -1,5 +1,6 @@
 # 超星登录 Cookie（身份凭证，绝对不能上传）
 chaoxing_cookies.json
+*_cookies.json
 
 # Claude 本地配置
 .claude/
@@ -7,3 +8,21 @@ chaoxing_cookies.json
 # Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+Thumbs.db
+.DS_Store
+
+# 临时文件
+*.tmp
+exam_structure_dump.json
+exam_probe.py
