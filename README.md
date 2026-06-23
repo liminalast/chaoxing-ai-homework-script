@@ -22,7 +22,7 @@
 | 脚本 | 用途 | 题型 | 自动提交 | 一键运行 |
 |------|------|------|----------|----------|
 | `chaoxing_ai_answer.py` | **章节作业** | 单选/多选/判断/填空 | ✅ 自动提交 | `run_chapter_answer.bat` |
-| `chaoxing_exam_answer.py` | **考试测试** | 单选/多选/判断/简答 | ❌ 手动交卷 | `run_exam_answer.bat` |
+| `chaoxing_exam_answer.py` | **考试测试** | 单选/多选/判断/填空/简答 | ❌ 手动交卷 | `run_exam_answer.bat` |
 
 两个脚本共用同一套 Cookie（`chaoxing_cookies.json`），登录一次两边都能用。
 
@@ -167,9 +167,10 @@ $env:DEEPSEEK_BASE_URL = "https://your-api.com"
 | 单选题 | `span.colorShallow` 含"单选" + `role="radio"` | JS 点击 `div.answerBg` |
 | 多选题 | `span.colorShallow` 含"多选" + `role="checkbox"` | 逐个点击 |
 | 判断题 | `span.colorShallow` 含"判断" | A=对 B=错 |
+| 填空题 | `span.colorShallow` 含"填空" + textarea | UEditor API 逐空填入，多空自动拆分 |
 | 简答题 | `span.colorShallow` 含"简答" | UEditor `setContent()` + blur 触发保存 |
 
-### 简答题处理（三步流程）
+### 填空/简答题处理（三步流程）
 
 ```
 1. 点击激活 → 点击 .subEditor 激活 UEditor

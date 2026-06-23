@@ -36,12 +36,13 @@ EXAM_URL = ""  # 在此填入考试URL 或通过 --url 参数传入
 
 @dataclass
 class Question:
-    qtype: str          # "single", "multiple", "judge", "short_answer"
+    qtype: str          # "single", "multiple", "judge", "short_answer", "fill"
     title: str
     options: list       # [{"label": "A", "text": "..."}, ...]
     question_id: str    # 题目ID（如 "885908821"）
     container_index: int
     section: str        # "单选题", "判断题", "简答题" 等
+    blank_count: int = 0  # 填空题的空数
 
 
 # ── AI 客户端 ────────────────────────────────────────────
@@ -90,6 +91,18 @@ class DeepSeekClient:
         print(f"[AI] 解析: {answers}")
         return answers
 
+    async def answer_fill_questions(self, questions: list[Question]) -> list[str]:
+        """填空题的AI作答"""
+        prompt = self._build_fill_prompt(questions)
+        print(f"\n[AI] 发送 {len(questions)} 道填空题给 {DEEPSEEK_MODEL}...")
+        t0 = time.time()
+        raw = await self.ask(prompt)
+        print(f"[AI] {time.time()-t0:.1f}s")
+        print(f"[AI] 回复:\n{raw[:1200]}")
+        answers = self._parse_text_answers(raw, len(questions))
+        print(f"[AI] 解析: {answers}")
+        return answers
+
     def _build_choice_prompt(self, questions: list[Question]) -> str:
         lines = ["你是学习助手。请回答以下题目，每题只返回答案字母。"]
         lines.append("单选返回单字母(A), 多选返回多字母(ABD), 判断A=对/B=错。")
@@ -110,6 +123,18 @@ class DeepSeekClient:
             lines.append(f"第{i}题 {q.title}")
             lines.append("")
         lines.append("请严格按以下格式返回（每题一行）：\n第1题：答案\n第2题：答案")
+        return "\n".join(lines)
+
+    def _build_fill_prompt(self, questions: list[Question]) -> str:
+        """填空题提示词：要求返回文字答案，多空用逗号分隔"""
+        lines = ["你是学习助手。请回答以下填空题。"]
+        lines.append("每题直接返回答案内容（简短词语或短语）。")
+        lines.append("如果题目有多个空，请用中文逗号（，）分隔各空答案。")
+        lines.append("不要解释，不要写'答案是'。\n")
+        for i, q in enumerate(questions, 1):
+            lines.append(f"第{i}题 {q.title}")
+            lines.append("")
+        lines.append("请严格按以下格式返回（每题一行）：\n第1题：答案1，答案2\n第2题：答案")
         return "\n".join(lines)
 
     def _parse_letter_answers(self, raw: str, count: int) -> list[str]:
@@ -313,7 +338,8 @@ async def extract_questions(page, font_map: dict = None) -> list[Question]:
                 if (typeText.includes('单选')) qtype = 'single';
                 else if (typeText.includes('多选')) qtype = 'multiple';
                 else if (typeText.includes('判断')) qtype = 'judge';
-                else if (typeText.includes('简答') || typeText.includes('问答') || typeText.includes('填空')) qtype = 'short_answer';
+                else if (typeText.includes('填空')) qtype = 'fill';
+                else if (typeText.includes('简答') || typeText.includes('问答')) qtype = 'short_answer';
 
                 // 获取纯题目文字（在overflow:hidden的div中）
                 const titleDiv = markName.querySelector('div[style*="overflow"]');
@@ -337,6 +363,7 @@ async def extract_questions(page, font_map: dict = None) -> list[Question]:
                     const tn = typeInput.value;
                     if (tn.includes('多选')) qtype = 'multiple';
                     else if (tn.includes('判断')) qtype = 'judge';
+                    else if (tn.includes('填空')) qtype = 'fill';
                     else if (tn.includes('简答') || tn.includes('问答')) qtype = 'short_answer';
                 }
             }
@@ -360,13 +387,20 @@ async def extract_questions(page, font_map: dict = None) -> list[Question]:
                 options.push({label: 'A', text: '对'}, {label: 'B', text: '错'});
             }
 
-            if (title || options.length > 0 || qtype === 'short_answer') {
+            // 填空题：统计输入框/textarea数量
+            let blankCount = 0;
+            if (qtype === 'fill') {
+                blankCount = el.querySelectorAll('input[type="text"], textarea').length;
+            }
+
+            if (title || options.length > 0 || qtype === 'short_answer' || qtype === 'fill') {
                 questions.push({
                     idx,
                     qid,
                     qtype,
                     title,
                     options,
+                    blankCount,
                 });
             }
         });
@@ -417,7 +451,7 @@ async def extract_questions(page, font_map: dict = None) -> list[Question]:
         # 确定题型标签
         type_labels = {
             "single": "单选题", "multiple": "多选题",
-            "judge": "判断题", "short_answer": "简答题",
+            "judge": "判断题", "short_answer": "简答题", "fill": "填空题",
         }
         section = type_labels.get(qtype, "未知")
 
@@ -428,6 +462,7 @@ async def extract_questions(page, font_map: dict = None) -> list[Question]:
             question_id=qid,
             container_index=i,
             section=section,
+            blank_count=item.get("blankCount", 0),
         ))
 
     return questions
@@ -443,6 +478,9 @@ async def click_answer(page, question: Question, answer: str) -> bool:
 
     if qtype == "short_answer":
         return await _fill_short_answer(page, question, answer)
+
+    if qtype == "fill":
+        return await _fill_blank_answer(page, question, answer)
 
     # 选择题/判断题: 点击 div.answerBg
     answer_upper = answer.upper()
@@ -591,6 +629,116 @@ async def _fill_short_answer(page, question: Question, answer: str) -> bool:
 
     print(f"  [SHORT] 完成 (含 blur+change 触发)")
     return True
+
+
+async def _fill_blank_answer(page, question: Question, answer: str) -> bool:
+    """填写填空题 — 支持多空，按逗号/顿号分隔后逐个填入"""
+    qid = question.question_id
+    idx = question.container_index
+
+    # 按分隔符拆分答案
+    parts = re.split(r'[，,、；;]\s*', answer.strip())
+    parts = [p.strip() for p in parts if p.strip()]
+    if not parts:
+        parts = [answer.strip()]
+
+    print(f"  [FILL] 第{idx+1}题 (qid={qid}) 空数={question.blank_count} 答案分词={parts}")
+
+    # 探测所有 textarea
+    info = await page.evaluate(f"""
+    (() => {{
+        const qDiv = document.querySelector('.questionLi[data="{qid}"]');
+        if (!qDiv) return JSON.stringify({{ok: false, why: 'no questionLi'}});
+
+        let textareas = Array.from(qDiv.querySelectorAll('textarea'));
+        if (textareas.length === 0) {{
+            textareas = Array.from(qDiv.querySelectorAll('input[type="text"]'));
+        }}
+
+        const tids = textareas.map(ta => ta.id);
+        return JSON.stringify({{ok: true, count: textareas.length, ids: tids}});
+    }})()
+    """)
+
+    data = json.loads(info)
+    if not data.get("ok"):
+        print(f"  [FILL-FAIL] {data.get('why', '?')}")
+        return False
+
+    blank_count = data.get("count", 0)
+    if blank_count == 0:
+        print(f"  [FILL-FAIL] 第{idx+1}题 找不到任何输入框")
+        return False
+
+    ok_all = True
+    for n, part in enumerate(parts):
+        if n >= blank_count:
+            print(f"  [FILL-WARN] 多余分词丢弃: {parts[n:]}")
+            break
+
+        safe_part = json.dumps(part, ensure_ascii=False)
+        result = await page.evaluate(f"""
+        (() => {{
+            const qDiv = document.querySelector('.questionLi[data="{qid}"]');
+            const textareas = qDiv.querySelectorAll('textarea');
+            const ta = textareas[{n}];
+            if (!ta) return 'no textarea at {n}';
+
+            const editorId = ta.id;
+
+            // 1. 点击激活（点击 subEditor 或编辑器容器）
+            const subEditor = qDiv.querySelector('.subEditor');
+            if (subEditor) subEditor.click();
+
+            // 2. UEditor API
+            if (typeof UE !== 'undefined') {{
+                try {{
+                    const editor = UE.getEditor(editorId);
+                    if (editor && editor.setContent) {{
+                        editor.setContent({safe_part});
+                        editor.sync();
+                        return 'ueditor ok';
+                    }}
+                }} catch(e) {{}}
+            }}
+
+            // 3. codeEditors
+            if (typeof codeEditors !== 'undefined' && codeEditors && codeEditors[editorId]) {{
+                try {{
+                    const ed = codeEditors[editorId];
+                    if (ed && ed.setContent) {{
+                        ed.setContent({safe_part});
+                        if (ed.sync) ed.sync();
+                        return 'codeEditors ok';
+                    }}
+                }} catch(e) {{}}
+            }}
+
+            // 4. fallback: 直接设 textarea 值
+            ta.value = {safe_part};
+            ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            ta.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return 'fallback';
+        }})()
+        """)
+        print(f"  [FILL] 第{idx+1}题 第{n+1}空 -> {part[:40]}  [{result}]")
+        if 'no textarea' in str(result):
+            ok_all = False
+        await asyncio.sleep(0.5)
+
+    # 失焦触发保存
+    await asyncio.sleep(0.2)
+    await page.evaluate(f"""
+    (() => {{
+        const qDiv = document.querySelector('.questionLi[data="{qid}"]');
+        if (!qDiv) return;
+        const title = qDiv.querySelector('h3.mark_name');
+        if (title) {{ title.click(); }}
+        else {{ document.body.click(); }}
+    }})()
+    """)
+
+    return ok_all
 
 
 # ── 主流程 ───────────────────────────────────────────────
@@ -758,6 +906,7 @@ async def answer_mode(exam_url: str):
         # 分类处理
         choice_qs = [q for q in questions if q.qtype in ("single", "multiple", "judge")]
         short_qs = [q for q in questions if q.qtype == "short_answer"]
+        fill_qs = [q for q in questions if q.qtype == "fill"]
 
         client = DeepSeekClient()
         BATCH = 20
@@ -792,10 +941,26 @@ async def answer_mode(exam_url: str):
                 if start + BATCH < len(short_qs):
                     await asyncio.sleep(1)
 
+        # ── 填空题 ──
+        fill_answers = []
+        if fill_qs:
+            print(f"\n[AI] 处理 {len(fill_qs)} 道填空题...")
+            for start in range(0, len(fill_qs), BATCH):
+                batch = fill_qs[start:start + BATCH]
+                try:
+                    ans = await client.answer_fill_questions(batch)
+                    fill_answers.extend(ans)
+                except Exception as e:
+                    print(f"  [ERROR] AI 调用失败: {e}")
+                    fill_answers.extend(["?"] * len(batch))
+                if start + BATCH < len(fill_qs):
+                    await asyncio.sleep(1)
+
         # ── 执行答题 ──
         print(f"\n[Action] 开始填入答案...")
         print(f"  选择题答案: {len(choice_answers)} 个")
         print(f"  简答题答案: {len(short_answers)} 个")
+        print(f"  填空题答案: {len(fill_answers)} 个")
 
         # 点击选择题
         for i, (q, ans) in enumerate(zip(choice_qs, choice_answers)):
@@ -824,6 +989,20 @@ async def answer_mode(exam_url: str):
             await asyncio.sleep(0.5)
             if (i + 1) % 5 == 0 and i + 1 < len(short_qs):
                 print(f"  ... 已完成 {i+1}/{len(short_qs)} 简答题")
+
+        # 填写填空题
+        for i, (q, ans) in enumerate(zip(fill_qs, fill_answers)):
+            ans_display = ans[:50] + "..." if len(ans) > 50 else ans
+            try:
+                ok = await click_answer(page, q, ans)
+                status = "✓" if ok else "✗"
+            except Exception as e:
+                status = "✗"
+                print(f"  [ERR] 填空第{q.container_index+1}题 填写失败: {e}")
+            print(f"  [{status}] 第{q.container_index+1}题 [填空题] -> {ans_display}")
+            await asyncio.sleep(0.5)
+            if (i + 1) % 5 == 0 and i + 1 < len(fill_qs):
+                print(f"  ... 已完成 {i+1}/{len(fill_qs)} 填空题")
 
         # ── 完成，不提交 ──
         print(f"\n{'='*60}")
